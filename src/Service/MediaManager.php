@@ -12,6 +12,7 @@ use Marko\Media\Contracts\MediaRepositoryInterface;
 use Marko\Media\Entity\Media;
 use Marko\Media\Exceptions\UploadException;
 use Marko\Media\Value\UploadedFile;
+use Psr\Clock\ClockInterface;
 
 readonly class MediaManager implements MediaManagerInterface
 {
@@ -19,6 +20,7 @@ readonly class MediaManager implements MediaManagerInterface
         private FilesystemInterface $filesystem,
         private MediaConfig $config,
         private MediaRepositoryInterface $repository,
+        private ClockInterface $clock,
     ) {}
 
     /**
@@ -55,7 +57,7 @@ readonly class MediaManager implements MediaManagerInterface
             throw UploadException::invalidExtension($file->extension, $this->config->allowedExtensions());
         }
 
-        $path = date('Y/m') . '/' . uniqid() . '.' . $file->extension;
+        $path = $this->clock->now()->format('Y/m') . '/' . uniqid() . '.' . $file->extension;
 
         $this->filesystem->write($path, (string) file_get_contents($file->tmpPath));
 

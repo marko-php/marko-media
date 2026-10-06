@@ -14,6 +14,7 @@ use Marko\Media\Entity\Media;
 use Marko\Media\Exceptions\UploadException;
 use Marko\Media\Service\MediaManager;
 use Marko\Media\Value\UploadedFile;
+use Marko\Testing\Fake\FakeClock;
 use Marko\Testing\Fake\FakeConfigRepository;
 
 function makeJpegContent(): string
@@ -300,6 +301,7 @@ it('validates file size against configured maximum and throws UploadException', 
         filesystem: $filesystem,
         config: $config,
         repository: $repository,
+        clock: new FakeClock(),
     );
 
     expect(fn () => $manager->upload($file))
@@ -323,6 +325,7 @@ it('validates MIME type against configured whitelist and throws UploadException'
         filesystem: $filesystem,
         config: $config,
         repository: $repository,
+        clock: new FakeClock(),
     );
 
     expect(fn () => $manager->upload($file))
@@ -339,6 +342,7 @@ it('validates file extension against configured whitelist and throws UploadExcep
         filesystem: $filesystem,
         config: $config,
         repository: $repository,
+        clock: new FakeClock(),
     );
 
     expect(fn () => $manager->upload($file))
@@ -355,6 +359,7 @@ it('creates Media entity record after successful upload', function (): void {
         filesystem: $filesystem,
         config: $config,
         repository: $repository,
+        clock: new FakeClock(),
     );
 
     $media = $manager->upload($file);
@@ -378,6 +383,7 @@ it('deletes file from storage and removes entity record on delete', function ():
         filesystem: $filesystem,
         config: $config,
         repository: $repository,
+        clock: new FakeClock(),
     );
 
     $media = $manager->upload($file);
@@ -405,6 +411,7 @@ it('retrieves file contents from storage via Media entity path and disk', functi
         filesystem: $filesystem,
         config: $config,
         repository: $repository,
+        clock: new FakeClock(),
     );
 
     $media = $manager->upload($file);
@@ -424,6 +431,7 @@ it('uploads a file to the configured disk via filesystem interface', function ()
         filesystem: $filesystem,
         config: $config,
         repository: $repository,
+        clock: new FakeClock(),
     );
 
     $media = $manager->upload($file);
@@ -453,6 +461,7 @@ it(
             filesystem: $filesystem,
             config: $config,
             repository: $repository,
+            clock: new FakeClock(),
         );
 
         $media = $manager->upload($file);
@@ -483,6 +492,7 @@ it('rejects an upload loudly when the content-derived MIME type is not in the al
         filesystem: $filesystem,
         config: $config,
         repository: $repository,
+        clock: new FakeClock(),
     );
 
     expect(fn () => $manager->upload($file))
@@ -512,6 +522,7 @@ it(
             filesystem: $filesystem,
             config: $config,
             repository: $repository,
+            clock: new FakeClock(),
         );
 
         expect(fn () => $manager->upload($file))
@@ -539,12 +550,40 @@ it('accepts an upload whose content-derived MIME type is in the allowed list', f
         filesystem: $filesystem,
         config: $config,
         repository: $repository,
+        clock: new FakeClock(),
     );
 
     $media = $manager->upload($file);
 
     expect($media)->toBeInstanceOf(Media::class)
         ->and($media->mimeType)->toBe('image/jpeg');
+
+    @unlink($tmpPath);
+});
+
+it('stores uploads under the year and month of the injected clock', function (): void {
+    $filesystem = makeFilesystem();
+    $tmpPath = createJpegTempFile();
+
+    $file = new UploadedFile(
+        name: 'photo.jpg',
+        tmpPath: $tmpPath,
+        mimeType: 'image/jpeg',
+        size: 1024,
+        extension: 'jpg',
+    );
+
+    $manager = new MediaManager(
+        filesystem: $filesystem,
+        config: makeMediaConfig(),
+        repository: makeRepository(),
+        clock: new FakeClock('2031-02-28 23:59:59'),
+    );
+
+    $media = $manager->upload($file);
+
+    expect($media->path)->toStartWith('2031/02/')
+        ->and($filesystem->exists($media->path))->toBeTrue();
 
     @unlink($tmpPath);
 });
