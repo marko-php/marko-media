@@ -6,10 +6,13 @@ namespace Marko\Media\Tests\Service;
 
 use Marko\Filesystem\Contracts\DirectoryListingInterface;
 use Marko\Filesystem\Contracts\FilesystemInterface;
+use Marko\Filesystem\Exceptions\FilesystemException;
+use Marko\Filesystem\Manager\FilesystemManager;
 use Marko\Filesystem\Values\DirectoryListing;
 use Marko\Filesystem\Values\FileInfo;
 use Marko\Media\Config\MediaConfig;
 use Marko\Media\Contracts\MediaRepositoryInterface;
+use Marko\Media\Contracts\UploadedFileCheckerInterface;
 use Marko\Media\Entity\Media;
 use Marko\Media\Exceptions\UploadException;
 use Marko\Media\Service\MediaManager;
@@ -50,7 +53,7 @@ function createTempFile(
 
 function makeMediaConfig(
     int $maxFileSize = 10485760,
-    string $disk = 'local',
+    string $disk = 'public',
     array $allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
     array $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'],
     array $mimeExtensionMap = ['image/jpeg' => ['jpg', 'jpeg'], 'image/png' => ['png'], 'image/gif' => ['gif'], 'image/webp' => ['webp']],
@@ -60,7 +63,6 @@ function makeMediaConfig(
         'media.max_file_size' => $maxFileSize,
         'media.allowed_mime_types' => $allowedMimeTypes,
         'media.allowed_extensions' => $allowedExtensions,
-        'media.url_prefix' => '/storage',
         'media.mime_extension_map' => $mimeExtensionMap,
     ]);
 
@@ -242,6 +244,55 @@ function makeFilesystem(): FilesystemInterface
     };
 }
 
+/**
+ * @param array<string, FilesystemInterface> $disks
+ */
+function makeFilesystemManager(
+    array $disks,
+): FilesystemManager {
+    return new class ($disks) extends FilesystemManager
+    {
+        /** @var array<string> */
+        public array $requested = [];
+
+        /**
+         * @param array<string, FilesystemInterface> $fakeDisks
+         */
+        public function __construct(
+            private readonly array $fakeDisks,
+        ) {}
+
+        public function disk(
+            ?string $name = null,
+        ): FilesystemInterface {
+            $this->requested[] = (string) $name;
+
+            return $this->fakeDisks[$name] ?? throw new FilesystemException(
+                message: "Disk '$name' is not configured",
+                context: 'Fake filesystem manager',
+                suggestion: 'Pass the disk to makeFilesystemManager()',
+            );
+        }
+    };
+}
+
+function makeUploadedFileChecker(
+    bool $trusted = true,
+): UploadedFileCheckerInterface {
+    return new readonly class ($trusted) implements UploadedFileCheckerInterface
+    {
+        public function __construct(
+            private bool $trusted,
+        ) {}
+
+        public function isTrusted(
+            string $tmpPath,
+        ): bool {
+            return $this->trusted;
+        }
+    };
+}
+
 function makeRepository(): MediaRepositoryInterface
 {
     return new class () implements MediaRepositoryInterface
@@ -298,10 +349,11 @@ it('validates file size against configured maximum and throws UploadException', 
     $file = makeUploadedFile(size: 2000);
 
     $manager = new MediaManager(
-        filesystem: $filesystem,
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
         config: $config,
         repository: $repository,
         clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
     );
 
     expect(fn () => $manager->upload($file))
@@ -322,10 +374,11 @@ it('validates MIME type against configured whitelist and throws UploadException'
     );
 
     $manager = new MediaManager(
-        filesystem: $filesystem,
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
         config: $config,
         repository: $repository,
         clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
     );
 
     expect(fn () => $manager->upload($file))
@@ -339,10 +392,11 @@ it('validates file extension against configured whitelist and throws UploadExcep
     $file = makeUploadedFile(mimeType: 'image/gif', extension: 'gif');
 
     $manager = new MediaManager(
-        filesystem: $filesystem,
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
         config: $config,
         repository: $repository,
         clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
     );
 
     expect(fn () => $manager->upload($file))
@@ -356,10 +410,11 @@ it('creates Media entity record after successful upload', function (): void {
     $file = makeUploadedFile(name: 'image.jpg', mimeType: 'image/jpeg', size: 2048, extension: 'jpg');
 
     $manager = new MediaManager(
-        filesystem: $filesystem,
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
         config: $config,
         repository: $repository,
         clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
     );
 
     $media = $manager->upload($file);
@@ -368,7 +423,7 @@ it('creates Media entity record after successful upload', function (): void {
         ->and($media->originalFilename)->toBe('image.jpg')
         ->and($media->mimeType)->toBe('image/jpeg')
         ->and($media->size)->toBe(2048)
-        ->and($media->disk)->toBe('local')
+        ->and($media->disk)->toBe('public')
         ->and($media->path)->not->toBeEmpty()
         ->and($repository->saved)->toHaveCount(1);
 });
@@ -380,10 +435,11 @@ it('deletes file from storage and removes entity record on delete', function ():
     $file = makeUploadedFile();
 
     $manager = new MediaManager(
-        filesystem: $filesystem,
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
         config: $config,
         repository: $repository,
         clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
     );
 
     $media = $manager->upload($file);
@@ -408,10 +464,11 @@ it('retrieves file contents from storage via Media entity path and disk', functi
     $file = makeUploadedFile(tmpPath: $tmpPath);
 
     $manager = new MediaManager(
-        filesystem: $filesystem,
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
         config: $config,
         repository: $repository,
         clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
     );
 
     $media = $manager->upload($file);
@@ -428,10 +485,11 @@ it('uploads a file to the configured disk via filesystem interface', function ()
     $file = makeUploadedFile();
 
     $manager = new MediaManager(
-        filesystem: $filesystem,
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
         config: $config,
         repository: $repository,
         clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
     );
 
     $media = $manager->upload($file);
@@ -458,10 +516,11 @@ it(
         );
 
         $manager = new MediaManager(
-            filesystem: $filesystem,
+            filesystemManager: makeFilesystemManager(['public' => $filesystem]),
             config: $config,
             repository: $repository,
             clock: new FakeClock(),
+            uploadedFileChecker: makeUploadedFileChecker(),
         );
 
         $media = $manager->upload($file);
@@ -489,10 +548,11 @@ it('rejects an upload loudly when the content-derived MIME type is not in the al
     );
 
     $manager = new MediaManager(
-        filesystem: $filesystem,
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
         config: $config,
         repository: $repository,
         clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
     );
 
     expect(fn () => $manager->upload($file))
@@ -519,10 +579,11 @@ it(
         );
 
         $manager = new MediaManager(
-            filesystem: $filesystem,
+            filesystemManager: makeFilesystemManager(['public' => $filesystem]),
             config: $config,
             repository: $repository,
             clock: new FakeClock(),
+            uploadedFileChecker: makeUploadedFileChecker(),
         );
 
         expect(fn () => $manager->upload($file))
@@ -547,10 +608,11 @@ it('accepts an upload whose content-derived MIME type is in the allowed list', f
     );
 
     $manager = new MediaManager(
-        filesystem: $filesystem,
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
         config: $config,
         repository: $repository,
         clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
     );
 
     $media = $manager->upload($file);
@@ -574,16 +636,84 @@ it('stores uploads under the year and month of the injected clock', function ():
     );
 
     $manager = new MediaManager(
-        filesystem: $filesystem,
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
         config: makeMediaConfig(),
         repository: makeRepository(),
         clock: new FakeClock('2031-02-28 23:59:59'),
+        uploadedFileChecker: makeUploadedFileChecker(),
     );
 
     $media = $manager->upload($file);
 
     expect($media->path)->toStartWith('2031/02/')
         ->and($filesystem->exists($media->path))->toBeTrue();
+
+    @unlink($tmpPath);
+});
+
+it('writes the upload to the configured media disk, not the default filesystem disk', function (): void {
+    $defaultDisk = makeFilesystem();
+    $publicDisk = makeFilesystem();
+    $filesystemManager = makeFilesystemManager(['local' => $defaultDisk, 'public' => $publicDisk]);
+
+    $manager = new MediaManager(
+        filesystemManager: $filesystemManager,
+        config: makeMediaConfig(disk: 'public'),
+        repository: makeRepository(),
+        clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
+    );
+
+    $media = $manager->upload(makeUploadedFile());
+
+    expect($media->disk)->toBe('public')
+        ->and($publicDisk->written)->toHaveKey($media->path)
+        ->and($defaultDisk->written)->toBeEmpty()
+        ->and($filesystemManager->requested)->toBe(['public']);
+});
+
+it('reads, checks and deletes media on the disk recorded on the entity', function (): void {
+    $oldDisk = makeFilesystem();
+    $oldDisk->write('2024/01/old.jpg', 'old-bytes');
+
+    $manager = new MediaManager(
+        filesystemManager: makeFilesystemManager(['local' => $oldDisk, 'public' => makeFilesystem()]),
+        config: makeMediaConfig(disk: 'public'),
+        repository: makeRepository(),
+        clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(),
+    );
+
+    $media = new Media();
+    $media->id = 7;
+    $media->disk = 'local';
+    $media->path = '2024/01/old.jpg';
+
+    expect($manager->retrieve($media))->toBe('old-bytes')
+        ->and($manager->exists($media))->toBeTrue();
+
+    $manager->delete($media);
+
+    expect($oldDisk->deleted)->toBe(['2024/01/old.jpg']);
+});
+
+it('rejects a tmpPath the uploaded file checker does not trust before storing anything', function (): void {
+    $filesystem = makeFilesystem();
+    $repository = makeRepository();
+    $tmpPath = createJpegTempFile();
+
+    $manager = new MediaManager(
+        filesystemManager: makeFilesystemManager(['public' => $filesystem]),
+        config: makeMediaConfig(),
+        repository: $repository,
+        clock: new FakeClock(),
+        uploadedFileChecker: makeUploadedFileChecker(trusted: false),
+    );
+
+    expect(fn () => $manager->upload(makeUploadedFile(tmpPath: $tmpPath)))
+        ->toThrow(UploadException::class, 'not received through PHP upload handling')
+        ->and($filesystem->written)->toBeEmpty()
+        ->and($repository->saved)->toBeEmpty();
 
     @unlink($tmpPath);
 });

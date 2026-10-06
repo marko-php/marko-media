@@ -6,6 +6,16 @@ namespace Marko\Media\Exceptions;
 
 class UploadException extends MediaException
 {
+    public static function notAnUploadedFile(
+        string $tmpPath,
+    ): self {
+        return new self(
+            message: 'Refusing to import a file that was not received through PHP upload handling',
+            context: "is_uploaded_file() returned false for temporary path: $tmpPath",
+            suggestion: "Build UploadedFile from \$_FILES[...]['tmp_name'] (or the routing request's uploaded file) — never from request data or an arbitrary local path. To import local files, run the import from the command line",
+        );
+    }
+
     public static function finfoUnavailable(): self
     {
         return new self(

@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Marko\Media\Service;
 
+use JsonException;
 use Marko\Config\Exceptions\ConfigNotFoundException;
-use Marko\Filesystem\Contracts\FilesystemInterface;
+use Marko\Filesystem\Exceptions\FilesystemException;
+use Marko\Filesystem\Manager\FilesystemManager;
 use Marko\Media\Config\MediaConfig;
 use Marko\Media\Contracts\MediaManagerInterface;
 use Marko\Media\Contracts\MediaRepositoryInterface;
+use Marko\Media\Contracts\UploadedFileCheckerInterface;
 use Marko\Media\Entity\Media;
 use Marko\Media\Exceptions\UploadException;
 use Marko\Media\Value\UploadedFile;
@@ -17,18 +20,23 @@ use Psr\Clock\ClockInterface;
 readonly class MediaManager implements MediaManagerInterface
 {
     public function __construct(
-        private FilesystemInterface $filesystem,
+        private FilesystemManager $filesystemManager,
         private MediaConfig $config,
         private MediaRepositoryInterface $repository,
         private ClockInterface $clock,
+        private UploadedFileCheckerInterface $uploadedFileChecker,
     ) {}
 
     /**
-     * @throws UploadException|ConfigNotFoundException
+     * @throws UploadException|ConfigNotFoundException|FilesystemException|JsonException
      */
     public function upload(
         UploadedFile $file,
     ): Media {
+        if (!$this->uploadedFileChecker->isTrusted($file->tmpPath)) {
+            throw UploadException::notAnUploadedFile($file->tmpPath);
+        }
+
         if ($file->size > $this->config->maxFileSize()) {
             throw UploadException::fileTooLarge($file->size, $this->config->maxFileSize());
         }
@@ -59,14 +67,16 @@ readonly class MediaManager implements MediaManagerInterface
 
         $path = $this->clock->now()->format('Y/m') . '/' . uniqid() . '.' . $file->extension;
 
-        $this->filesystem->write($path, (string) file_get_contents($file->tmpPath));
+        $disk = $this->config->disk();
+
+        $this->filesystemManager->disk($disk)->write($path, (string) file_get_contents($file->tmpPath));
 
         $media = new Media();
         $media->filename = basename($path);
         $media->originalFilename = $file->name;
         $media->mimeType = $derivedMimeType;
         $media->size = $file->size;
-        $media->disk = $this->config->disk();
+        $media->disk = $disk;
         $media->path = $path;
 
         return $this->repository->save($media);
@@ -92,22 +102,31 @@ readonly class MediaManager implements MediaManagerInterface
         return $mimeType;
     }
 
+    /**
+     * @throws FilesystemException|JsonException
+     */
     public function retrieve(
         Media $media,
     ): string {
-        return $this->filesystem->read($media->path);
+        return $this->filesystemManager->disk($media->disk)->read($media->path);
     }
 
+    /**
+     * @throws FilesystemException|JsonException
+     */
     public function delete(
         Media $media,
     ): void {
-        $this->filesystem->delete($media->path);
+        $this->filesystemManager->disk($media->disk)->delete($media->path);
         $this->repository->delete((int) $media->id);
     }
 
+    /**
+     * @throws FilesystemException|JsonException
+     */
     public function exists(
         Media $media,
     ): bool {
-        return $this->filesystem->exists($media->path);
+        return $this->filesystemManager->disk($media->disk)->exists($media->path);
     }
 }

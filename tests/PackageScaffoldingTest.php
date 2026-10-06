@@ -35,10 +35,9 @@ it('creates valid package scaffolding with composer.json, module.php, and config
         ->and($config)->toHaveKey('max_file_size')
         ->and($config)->toHaveKey('allowed_mime_types')
         ->and($config)->toHaveKey('allowed_extensions')
-        ->and($config)->toHaveKey('url_prefix')
-        ->and($config['disk'])->toBe('local')
+        ->and($config)->not->toHaveKey('url_prefix')
+        ->and($config['disk'])->toBe('public')
         ->and($config['max_file_size'])->toBe(10485760)
         ->and($config['allowed_mime_types'])->toBe(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
-        ->and($config['allowed_extensions'])->toBe(['jpg', 'jpeg', 'png', 'gif', 'webp'])
-        ->and($config['url_prefix'])->toBe('/storage');
+        ->and($config['allowed_extensions'])->toBe(['jpg', 'jpeg', 'png', 'gif', 'webp']);
 });
